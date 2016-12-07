@@ -124,6 +124,9 @@ final class SensorRecorder {
                 logPrintWriter.flush();
                 logPrintWriter.close();
             }
+            accelerometer_record.clear();
+            gyroscope_record.clear();
+            linear_accelerometer_record.clear();
         } catch (IOException e) {
             e.printStackTrace();
         }

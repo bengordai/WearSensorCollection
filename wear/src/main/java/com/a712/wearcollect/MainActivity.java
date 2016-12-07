@@ -1,9 +1,12 @@
 package com.a712.wearcollect;
 
-import android.app.Activity;
+import android.content.ComponentName;
+import android.content.Intent;
+import android.content.ServiceConnection;
+import android.graphics.Color;
 import android.os.Bundle;
 import android.os.Handler;
-import android.os.Message;
+import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
 import android.support.wearable.activity.WearableActivity;
 import android.support.wearable.view.WatchViewStub;
@@ -36,10 +39,7 @@ import java.util.Date;
 
 
 public class MainActivity extends WearableActivity implements DataApi.DataListener {
-    private final static int CMD_RECORDING_TIME = 0x700;
 
-    private UIHandler uiHandler;
-    private UIThread uiThread;
     private GoogleApiClient mGoogleApiClient;
     private boolean isRunning = false;
     private Button mButton;
@@ -48,6 +48,11 @@ public class MainActivity extends WearableActivity implements DataApi.DataListen
 
     private boolean needAudioRecord = false;
     private CheckBox mAudioRecordCheckBox;
+
+    private ServiceConnection serviceConnection;
+    private RecordingService recordingService;
+    private RecordingService.SimpleBinder simpleBinder;
+    private Handler handler;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -60,14 +65,14 @@ public class MainActivity extends WearableActivity implements DataApi.DataListen
             public void onLayoutInflated(WatchViewStub stub) {
                 mButton = (Button) stub.findViewById(R.id.button);
                 txt = (TextView) stub.findViewById(R.id.txt);
-                mAudioRecordCheckBox = (CheckBox)stub.findViewById(R.id.checkBox);
-                if(mAudioRecordCheckBox != null) {
+                mAudioRecordCheckBox = (CheckBox) stub.findViewById(R.id.checkBox);
+                if (mAudioRecordCheckBox != null) {
                     mAudioRecordCheckBox.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
                         @Override
                         public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                            if(isRunning){
+                            if (isRunning) {
                                 buttonView.setChecked(needAudioRecord);
-                            }else{
+                            } else {
                                 needAudioRecord = isChecked;
                             }
                         }
@@ -99,32 +104,57 @@ public class MainActivity extends WearableActivity implements DataApi.DataListen
                 .addApi(Wearable.API)
                 .build();
 
-        uiHandler = new UIHandler();
-
+        handler = new Handler();
 
 
         File baseDir = getFilesDir();
-        for(File each:baseDir.listFiles()){
-            if(each.isDirectory()){
-                Log.i("Ben",each.getAbsolutePath());
-            }else{
-                Log.i("Ben",each.getAbsolutePath());
+        for (File each : baseDir.listFiles()) {
+            if (each.isDirectory()) {
+                Log.i("Ben", each.getAbsolutePath());
+            } else {
+                Log.i("Ben", each.getAbsolutePath());
                 each.delete();
             }
         }
 
+        serviceConnection = new ServiceConnection() {
+            @Override
+            public void onServiceConnected(ComponentName name, IBinder service) {
+                simpleBinder = (RecordingService.SimpleBinder) service;
+                recordingService = simpleBinder.getService();
+                Log.i("Ben", "RecordingService connected");
+            }
+
+            @Override
+            public void onServiceDisconnected(ComponentName name) {
+                simpleBinder = null;
+                recordingService = null;
+                Log.i("Ben", "RecordingService disconnected");
+            }
+        };
+        Intent intent = new Intent(MainActivity.this, RecordingService.class);
+        bindService(intent, serviceConnection, BIND_AUTO_CREATE);
+
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        unbindService(serviceConnection);
     }
 
     @Override
     public void onExitAmbient() {
         super.onExitAmbient();
         mButton.setEnabled(true);
+        txt.setTextColor(Color.WHITE);
     }
 
     @Override
     public void onEnterAmbient(Bundle ambientDetails) {
         super.onEnterAmbient(ambientDetails);
         mButton.setEnabled(false);
+        txt.setTextColor(Color.DKGRAY);
     }
 
     @Override
@@ -139,7 +169,6 @@ public class MainActivity extends WearableActivity implements DataApi.DataListen
         Wearable.DataApi.removeListener(mGoogleApiClient, this);
         mGoogleApiClient.disconnect();
     }
-
 
     @Override
     public void onDataChanged(DataEventBuffer dataEventBuffer) {
@@ -161,8 +190,7 @@ public class MainActivity extends WearableActivity implements DataApi.DataListen
         }
     }
 
-
-    private void sendFiles(File wav, File acc, File gyro, File linearAcc,String timestamp) {
+    private void sendFiles(File wav, File acc, File gyro, File linearAcc, String timestamp) {
         if (!mGoogleApiClient.isConnected()) {
             Log.e("Ben", "Not Connected!!!!!!");
             return;
@@ -173,9 +201,9 @@ public class MainActivity extends WearableActivity implements DataApi.DataListen
         Asset assetGyro = null;
         Asset assetLinearAcc = null;
         try {
-            if(needAudioRecord){
+            if (needAudioRecord) {
                 assetWav = Asset.createFromFd(ParcelFileDescriptor.open(wav, ParcelFileDescriptor.MODE_READ_ONLY));
-            }else{
+            } else {
                 assetWav = null;
             }
             assetAcc = Asset.createFromFd(ParcelFileDescriptor.open(acc, ParcelFileDescriptor.MODE_READ_ONLY));
@@ -205,38 +233,10 @@ public class MainActivity extends WearableActivity implements DataApi.DataListen
         if (isRunning) {
             mButton.setText("Writing file");
             mButton.setEnabled(false);
-            if (uiThread != null) {
-                uiThread.stopThread();
-            }
-            if (uiHandler != null)
-                uiHandler.removeCallbacks(uiThread);
 
-            if(needAudioRecord) {
-                stopRecording();
-            }
-            stopSensors();
+            stop();
 
-
-
-            String timeStr = (new SimpleDateFormat("yyyy_MM_dd_HH_mm_ss")).format(startTime);
-            final String wavFilename = String.format("Audio-%s.wav", timeStr);
-            final String accFilename = String.format("accelerometer-%s.txt", timeStr);
-            final String gyroFilename = String.format("gyroscope-%s.txt", timeStr);
-            final String linearAccFilename = String.format("linear_accelerometer-%s.txt", timeStr);
-            File wav = new File(getFilesDir(), wavFilename);
-            File acc = new File(getFilesDir(), accFilename);
-            File gyro = new File(getFilesDir(), gyroFilename);
-            File linearAcc = new File(getFilesDir(),linearAccFilename);
-            final String text = String.format("wav:%d,acc:%d\ngyro:%d,linearacc:%d", wav.length(), acc.length(), gyro.length(),linearAcc.length());
-            uiHandler.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    txt.setText(text);
-                }
-            }, 1000);
-
-
-            sendFiles(wav, acc, gyro, linearAcc, timeStr);
+            sendFiles();
 
             mButton.setText("Suspended");
             mButton.setEnabled(true);
@@ -246,13 +246,7 @@ public class MainActivity extends WearableActivity implements DataApi.DataListen
 
             startTime = new Date();
 
-            if (needAudioRecord) {
-                startRecording(startTime);
-            }
-            startSensors(startTime);
-
-            uiThread = new UIThread();
-            new Thread(uiThread).start();
+            start(startTime);
 
             mButton.setText("Running");
             mButton.setEnabled(true);
@@ -260,83 +254,51 @@ public class MainActivity extends WearableActivity implements DataApi.DataListen
         }
     }
 
+    private void sendFiles() {
+        String timeStr = (new SimpleDateFormat("yyyy_MM_dd_HH_mm_ss")).format(startTime);
+        final String wavFilename = String.format("Audio-%s.wav", timeStr);
+        final String accFilename = String.format("accelerometer-%s.txt", timeStr);
+        final String gyroFilename = String.format("gyroscope-%s.txt", timeStr);
+        final String linearAccFilename = String.format("linear_accelerometer-%s.txt", timeStr);
+        File wav = new File(getFilesDir(), wavFilename);
+        File acc = new File(getFilesDir(), accFilename);
+        File gyro = new File(getFilesDir(), gyroFilename);
+        File linearAcc = new File(getFilesDir(), linearAccFilename);
+        final String text = String.format("wav:%d,acc:%d\ngyro:%d,linearacc:%d", wav.length(), acc.length(), gyro.length(), linearAcc.length());
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                txt.setText(text);
+            }
+        }, 0);
 
-
-    private void startRecording(Date date) {
-        AudioRecorder mRecorder = AudioRecorder.getInstance(this);
-        mRecorder.startRecording(date);
+        sendFiles(wav, acc, gyro, linearAcc, timeStr);
     }
 
-    private void stopRecording() {
-        AudioRecorder mRecorder = AudioRecorder.getInstance(this);
-        mRecorder.stopRecording();
-    }
-
-    private void startSensors(Date date) {
-        SensorRecorder mRecorder = SensorRecorder.getInstance(this);
-        mRecorder.start(date);
-    }
-
-    private void stopSensors() {
-        SensorRecorder mRecorder = SensorRecorder.getInstance(this);
-        mRecorder.stop();
-    }
-
-
-    private final class UIHandler extends Handler {
-        UIHandler() {
-            super();
-        }
-
-        @Override
-        public void handleMessage(Message msg) {
-//            Log.d("MyHandler", "handleMessage......");
-            super.handleMessage(msg);
-            Bundle b = msg.getData();
-            int vCmd = b.getInt("cmd");
-            switch (vCmd) {
-                case CMD_RECORDING_TIME: {
-                    int vTime = b.getInt("msg");
-                    String str = "正在录制：" + vTime + " s;";
-
-                    if(vTime > 10){
-                        str += Integer.toString((vTime - 11 )%6 + 1) + "s";
+    private void start(Date date) {
+        simpleBinder.start(date, needAudioRecord);
+        recordingService.setOnTimeUpdateListener(new RecordingService.OnTimeUpdateListener() {
+            @Override
+            public void onTimeUpdate(int current_time) {
+//                String str = "正在录制：" + current_time + " s;";
+//                if (current_time > 10) {
+//                    str += Integer.toString((current_time - 11) % 6 + 1) + "s";
+//                }
+                final String str = "正在录制：" + current_time + " s;" + (current_time > 10 ? Integer.toString((current_time - 11) % 6 + 1) + "s" : "");
+                handler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        txt.setText(str);
                     }
-                    MainActivity.this.txt.setText(str);
-                    break;
-                }
-                default:
-                    break;
+                }, 0);
+
             }
-        }
+        });
     }
 
-    private final class UIThread implements Runnable {
-        int mTimeMill = 0;
-        boolean vRun = true;
-
-        void stopThread() {
-            vRun = false;
-        }
-
-        public void run() {
-            while (vRun) {
-                try {
-                    Thread.sleep(1000);
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
-                mTimeMill++;
-//                Log.d("thread", "mThread........" + mTimeMill);
-                Message msg = new Message();
-                Bundle b = new Bundle();// 存放数据
-                b.putInt("cmd", CMD_RECORDING_TIME);
-                b.putInt("msg", mTimeMill);
-                msg.setData(b);
-
-                MainActivity.this.uiHandler.sendMessage(msg); // 向Handler发送消息,更新UI
-            }
-
-        }
+    private void stop() {
+        simpleBinder.stop(needAudioRecord);
+        recordingService.setOnTimeUpdateListener(null);
     }
+
 }
